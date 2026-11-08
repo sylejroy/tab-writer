@@ -4,6 +4,8 @@ A desktop editor for guitar tabs. Click on the staff, type fret numbers, pick du
 drag notes around — and print a clean sheet with chord names, capo note, time signatures, rhythm beams
 and red section bars. Pure Python (tkinter), no dependencies.
 
+![Tab Writer editor in dark mode, showing a fingerstyle intro with strum arrows, chord names and a capo note](docs/screenshot.png)
+
 ## Start
 
 ```sh
