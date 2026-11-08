@@ -1,0 +1,17 @@
+// Transcription of the reference intro (thumb on the bass, fingers on the top strings).
+title: Intro Study
+subtitle: Fingerstyle pattern
+capo: 5
+time: 4/4
+tempo: 76
+
+// One measure each; the chord name travels with the macro.
+def am = [Am] :4 0.5^ :8 (2.3 2.4 x.5)^ 1.2v 0.5^ 2.3v (2.3 2.4 x.5)^ 0.3v
+def c  = [C]  :4 3.5^ :8 (0.3 2.4 x.5)^ 1.2v 3.5^ 0.3v (0.3 2.4 x.5)^ 0.3v
+def g  = [G]  :4 3.6^ :8 (0.3 0.4 x.6)^ 3.2v 3.6^ 0.3v (0.3 0.4 x.6)^ 3.2v
+
+# Intro
+| $am | $c |
+| [F] :4 1.6^ :8 (3.4 3.5 x.6)^ 2.3v 1.6^ 3.4v (3.4 3.5 x.6)^ 0.3v | [C] :8 3.5^ 2.4v (0.3 2.4 x.5)^ 1.2v [Csus2/B] 2.5^ 0.4v (0.3 0.4 x.5)^ 1.2v |
+| $am | $c |
+| $g | % |
