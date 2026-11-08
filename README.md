@@ -40,6 +40,32 @@ New measures are filled with rests on the grid (eighths by default), so you can 
 length doesn't match the time signature get a red measure number and appear under **Problems**.
 Press `F1` for all shortcuts.
 
+## Import from YouTube
+
+**File → Import from YouTube…** (`Ctrl+I`) turns a song into an editable tab draft using the separate
+[guitar-transcriber](#guitar-transcriber) project: it separates the guitar from the recording, finds the
+chords, fret shapes, capo and every pick stroke, and Tab Writer lays that out as bars with chord names,
+strum arrows and rhythm.
+
+- Search by name or paste a YouTube link. Songs analysed before open instantly; new ones take a few
+  minutes on the GPU (progress is shown, and you can stop it).
+- Options: use capo shapes when a capo is detected, strum arrows (down on the beat, up in between — a guess),
+  and rhythm rounded to eighths (easier to read) or kept at sixteenths.
+- The result is a draft: check it by ear and fix it with the normal editing tools.
+- **Play along**: imported tabs get a transport bar above the sheet. Play (`Ctrl+Space`) starts at the cursor
+  and a playhead follows the music through the tab; click anywhere to jump there, pause to leave the cursor
+  on the current beat. Choose the full song or the separated guitar track. Each bar's position in the audio
+  is saved in the file (`~12.34` at the start of a measure), so this still works after saving, reopening and
+  editing. Windows only, and it needs guitar-transcriber's song folder to still be there.
+
+From the command line: `python -m tabwriter import --list`, then `python -m tabwriter import <video id> -o song.tab`.
+
+### guitar-transcriber
+
+Not included here: it needs PyTorch, demucs and a GPU, so it lives in its own folder with its own `.venv`.
+Tab Writer looks for it in `D:\guitar-transcriber`, the `TABWRITER_TRANSCRIBER` environment variable, or a
+folder you pick in the import dialog. Tab Writer itself still has no dependencies.
+
 ## Printing
 
 - **File → Print** (`Ctrl+P`) opens the sheet in your browser's print dialog (A4 by default).
@@ -77,6 +103,7 @@ tempo: 76
 | `^` `v` suffix | Up / down strum arrow |
 | `:4` `:8` `:16` `:4.` `:8t` | Duration of following notes (dotted, triplet) |
 | `r` `[Am]` `%` `@3/4` | Rest, chord name, repeat previous measure, time change |
+| `~12.34` | This measure starts 12.34 s into the recording (written by the YouTube import) |
 | `def x = …` / `$x` | Reusable snippet (expanded once you edit visually) |
 
 ## Code
@@ -86,5 +113,6 @@ tempo: 76
 - `tabwriter/layout.py` – page geometry shared by the screen and the printout
 - `tabwriter/render.py` – HTML/SVG for printing · `export.py` – PDF
 - `tabwriter/parser.py` / `serialize.py` – .tab text ⇄ model (`model.py`)
+- `tabwriter/transcriber.py` / `import_dialog.py` – YouTube import via guitar-transcriber
 
 Tests: `python -m unittest discover -s tests -t .`

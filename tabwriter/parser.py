@@ -17,6 +17,7 @@ Tokens inside a measure:
     [Am]                      chord name above the next event
     r                         rest
     @3/4                      time signature change starting with this measure
+    ~12.34                    this measure starts 12.34 s into the audio (written by the YouTube import)
     %                         a whole measure: repeat the previous measure
 """
 from __future__ import annotations
@@ -37,6 +38,7 @@ DUR_RE = re.compile(r"^:(1|2|4|8|16|32)(\.?)(t?)$")
 NOTE_RE = re.compile(r"^(\d{1,2}|[xX])\.(\d{1,2})$")
 SHAPE_RE = re.compile(r"^[0-9xX\-]+$")
 TIME_RE = re.compile(r"^(\d{1,2})\s*/\s*(1|2|4|8|16|32)$")
+AUDIO_TIME_RE = re.compile(r"^~(\d+(?:\.\d+)?)$")
 INLINE_TIME_RE = re.compile(r"^@(\d{1,2})/(1|2|4|8|16|32)$")
 PITCH_RE = re.compile(r"[A-Ga-g][#b]?")
 STRUMS = {"^": "up", "v": "down"}
@@ -63,6 +65,7 @@ class _Parser:
         self.base, self.dotted, self.triplet = 4, False, False
         self.number = 0
         self.last: Measure | None = None
+        self.pending_at: float | None = None
 
     # -- helpers -----------------------------------------------------------
     def problem(self, line: int, message: str, level: str = "error") -> None:
@@ -187,7 +190,9 @@ class _Parser:
         else:
             events = self.events(segment, lineno)
         self.number += 1
-        m = Measure(self.number, self.time, events, show_time=self.time_pending, line=lineno)
+        m = Measure(self.number, self.time, events, show_time=self.time_pending, line=lineno,
+                    at=self.pending_at)
+        self.pending_at = None
         self.time_pending = False
         self.last = m
         return m
@@ -200,6 +205,13 @@ class _Parser:
                 if chord is not None:
                     self.problem(lineno, f"Chord [{chord}] is not followed by a note", "warning")
                 chord = tok[1:-1].strip() or None
+                continue
+            if tok.startswith("~"):
+                m = AUDIO_TIME_RE.match(tok)
+                if not m:
+                    self.problem(lineno, f"Bad audio time '{tok}' — use e.g. ~12.5 (seconds)")
+                else:
+                    self.pending_at = float(m.group(1))
                 continue
             if tok.startswith("@"):
                 m = INLINE_TIME_RE.match(tok)

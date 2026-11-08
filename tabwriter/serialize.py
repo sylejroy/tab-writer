@@ -66,10 +66,12 @@ def serialize(song: Song) -> str:
         for row in section.rows:
             parts = []
             for m in row:
-                if prev is not None and _same(m, prev):
+                if prev is not None and _same(m, prev) and m.at is None:
                     parts.append("%")
                     continue
                 toks = []
+                if m.at is not None:
+                    toks.append(f"~{m.at:.3f}".rstrip("0").rstrip("."))
                 if prev is not None and m.time != prev.time:
                     toks.append(f"@{m.time[0]}/{m.time[1]}")
                 for ev in m.events:

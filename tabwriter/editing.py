@@ -498,6 +498,8 @@ class TabEditor:
     def duplicate_measure(self, first: int | None = None, last: int | None = None):
         first, last = self._span(first, last)
         copies = [copy.deepcopy(r.measure) for r in self.refs()[first:last + 1]]
+        for m in copies:
+            m.at = None
         for i, m in enumerate(copies):
             self._insert_measure_after(last + i, m)
         self.cursor.m, self.cursor.e = last + 1, 0
@@ -506,6 +508,8 @@ class TabEditor:
         """Copy measures to the clipboard; returns how many were copied."""
         first, last = self._span(first, last)
         self.clipboard = [copy.deepcopy(r.measure) for r in self.refs()[first:last + 1]]
+        for m in self.clipboard:
+            m.at = None
         return len(self.clipboard)
 
     @_op()

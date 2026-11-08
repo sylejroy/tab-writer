@@ -17,6 +17,7 @@ from .export import ExportError, html_to_pdf
 from .layout import GAP, TEXT_STYLES, WIDTH, SystemLayout, layout_song
 from .model import STANDARD_TUNING, Song
 from .parser import parse
+from . import player as playback
 from .render import header_lines, render_html
 from .serialize import serialize
 
@@ -75,6 +76,10 @@ Mouse
   Drag across      select measures (Shift+click extends, Ctrl+A selects all)
   Right-click      measure menu: delete, copy, duplicate, clear
   Ctrl+wheel       zoom
+
+Playback (tabs imported from YouTube)
+  Ctrl+Space       play / pause from the cursor (the playhead follows the music)
+  Click            while playing: jump there
 
 Notes
   0–9              fret (type two digits quickly for 10–24)
@@ -159,10 +164,18 @@ class TabWriterApp:
         self.dark = tk.BooleanVar(value=self.prefs.get("dark", True))
         self.pal = PALETTES["dark" if self.dark.get() else "light"]
         self.sel: tuple[int, int] | None = None      # selected measure range (first, last)
+        self.player: playback.Player | None = None
+        self.timeline: playback.Timeline | None = None
+        self.play_job = None
+        self.play_from: Cursor | None = None
+        self.slot_cache: dict = {}
         self.sel_anchor: int | None = None
 
         root.title("Tab Writer")
-        root.geometry("1380x900")
+        # A large, ordinary window: most of the screen, centred, not maximised.
+        screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
+        width, height = max(900, int(screen_w * 0.85)), max(600, int(screen_h * 0.85))
+        root.geometry(f"{width}x{height}+{(screen_w - width) // 2}+{max(0, (screen_h - height) // 2 - 20)}")
         root.minsize(900, 600)
         self._style()
         self._menu()
@@ -212,6 +225,15 @@ class TabWriterApp:
                          arrowcolor=pal["muted"])
             st.map("TScrollbar", background=[("active", pal["hover_ui"])])
             st.configure("TSeparator", background=pal["border"])
+            st.configure("Treeview", background=pal["field"], fieldbackground=pal["field"], foreground=pal["fg"],
+                         bordercolor=pal["border"])
+            st.map("Treeview", background=[("selected", ACCENT)], foreground=[("selected", "#ffffff")])
+            st.configure("Treeview.Heading", background=pal["ui"], foreground=pal["fg"], bordercolor=pal["border"])
+            st.map("Treeview.Heading", background=[("active", pal["hover_ui"])])
+            st.configure("TRadiobutton", background=pal["ui"], indicatorbackground=pal["field"])
+            st.map("TRadiobutton", background=[("active", pal["ui"])], indicatorbackground=[("selected", ACCENT)])
+            st.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=pal["field"],
+                         bordercolor=pal["border"], lightcolor=ACCENT, darkcolor=ACCENT)
             st.configure("TLabelframe.Label", background=pal["ui"], foreground=pal["fg"])
         else:
             st.theme_use(self.light_theme)
@@ -240,7 +262,7 @@ class TabWriterApp:
                                activeforeground="#ffffff")
         self._dark_titlebar(dark)
         self.prefs["dark"] = dark
-        _save_prefs(self.prefs)
+        self.save_prefs()
         self.redraw()
 
     def _dark_titlebar(self, dark: bool) -> None:
@@ -255,6 +277,9 @@ class TabWriterApp:
         except Exception:
             pass
 
+    def save_prefs(self) -> None:
+        _save_prefs(self.prefs)
+
     def ink(self, color: str) -> str:
         """Screen colour for a print colour."""
         role = INK_ROLES.get(color.lower())
@@ -268,6 +293,7 @@ class TabWriterApp:
         m = tk.Menu(bar, tearoff=False)
         m.add_command(label="New", accelerator="Ctrl+N", command=self.new)
         m.add_command(label="Open…", accelerator="Ctrl+O", command=self.open)
+        m.add_command(label="Import from YouTube…", accelerator="Ctrl+I", command=self.import_youtube)
         m.add_command(label="Save", accelerator="Ctrl+S", command=self.save)
         m.add_command(label="Save As…", accelerator="Ctrl+Shift+S", command=self.save_as)
         m.add_separator()
@@ -365,10 +391,30 @@ class TabWriterApp:
         vbar = ttk.Scrollbar(sheet, orient="vertical", command=self.canvas.yview)
         hbar = ttk.Scrollbar(sheet, orient="horizontal", command=self.canvas.xview)
         self.canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        self._transport(sheet)
         vbar.pack(side="right", fill="y")
         hbar.pack(side="bottom", fill="x")
         self.canvas.pack(side="left", fill="both", expand=True)
         self.sheet_frame = sheet
+
+    def _transport(self, parent) -> None:
+        bar = self.transport = ttk.Frame(parent, padding=(10, 6))
+        self.play_btn = ttk.Button(bar, text="\u25b6  Play", width=10, command=self.toggle_play, takefocus=False)
+        self.play_btn.pack(side="left")
+        ttk.Button(bar, text="\u25a0  Stop", width=8, command=self.stop_playback, takefocus=False).pack(side="left", padx=(6, 0))
+        ttk.Label(bar, text="Track").pack(side="left", padx=(16, 4))
+        self.track_var = tk.StringVar(value=playback.TRACKS["mix"])
+        track = ttk.Combobox(bar, textvariable=self.track_var, values=list(playback.TRACKS.values()), width=12,
+                             state="readonly")
+        track.pack(side="left")
+        track.bind("<<ComboboxSelected>>", lambda e: (self.change_track(), self.canvas.focus_set()))
+        self.follow_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="Follow along", variable=self.follow_var, takefocus=False).pack(side="left", padx=(16, 0))
+        self.time_label = ttk.Label(bar, text="", style="Status.TLabel")
+        self.time_label.pack(side="left", padx=(16, 0))
+        ttk.Label(bar, text="Plays from the cursor  ·  Ctrl+Space play/pause  ·  click the tab to jump",
+                  style="Status.TLabel").pack(side="right")
+        self._transport_shown = False
 
     def _group(self, parent, title: str) -> ttk.Labelframe:
         f = ttk.Labelframe(parent, text=title, style="Section.TLabelframe", padding=(8, 4, 8, 8))
@@ -526,7 +572,7 @@ class TabWriterApp:
         c.bind("<Configure>", self.on_resize)
         r = self.root
         for seq, fn in (("<Control-n>", self.new), ("<Control-o>", self.open), ("<Control-s>", self.save),
-                        ("<Control-S>", self.save_as), ("<Control-p>", self.print_sheet), ("<F1>", self.show_shortcuts),
+                        ("<Control-S>", self.save_as), ("<Control-i>", self.import_youtube), ("<Control-p>", self.print_sheet), ("<F1>", self.show_shortcuts),
                         ("<Control-equal>", lambda: self.set_zoom(self.zoom * 1.15)),
                         ("<Control-plus>", lambda: self.set_zoom(self.zoom * 1.15)),
                         ("<Control-minus>", lambda: self.set_zoom(self.zoom / 1.15)),
@@ -618,8 +664,15 @@ class TabWriterApp:
             self._draw_system(sys_, oy)
 
         c.configure(scrollregion=(0, 0, max(c.winfo_width(), x0 + page_w + 20), y0 + page_h * sc + 30))
+        self.slot_cache = {}
+        for sys_, oy in self.frames:
+            for h in sys_.hits:
+                self.slot_cache[(h.m, h.e)] = (sys_, oy, h.xn, h.x, h.w)
+        self.timeline = None
         self.draw_selection()
         self.draw_cursor()
+        if self.player and self.player.playing:
+            self.draw_playhead(self.player.position())
 
     def _draw_system(self, sys_: SystemLayout, oy: float) -> None:
         c, sc = self.canvas, self.scale
@@ -745,6 +798,8 @@ class TabWriterApp:
             return
         self.set_selection(None)
         self.editor.set_cursor(loc.m, loc.e, loc.s)
+        if self.player and self.player.playing:
+            self.seek_to_cursor()
         if self.editor.note():
             self.drag = {"src": Cursor(**vars(self.editor.cursor)), "dst": None}
         else:                                      # dragging from an empty spot selects measures
@@ -834,6 +889,9 @@ class TabWriterApp:
         if ctrl and k in ("a", "A"):
             self.select_all()
             return "break"
+        if ctrl and k == "space":
+            self.toggle_play()
+            return "break"
         if ctrl:
             actions = {"d": ed.repeat_beat, "D": ed.repeat_beat, "v": ed.paste_measure, "V": ed.paste_measure,
                        "Left": lambda: self.nav(ed.move_measure, -1), "Right": lambda: self.nav(ed.move_measure, 1)}
@@ -919,6 +977,7 @@ class TabWriterApp:
 
     def refresh(self, full: bool = True, scroll: bool = False) -> None:
         if full:
+            self.update_transport()
             self.redraw()
             self.update_source_panel()
         else:
@@ -1241,6 +1300,7 @@ class TabWriterApp:
         self.editor.replace_song(song)
         self.source_text = text
         self.redraw()
+        self.update_transport()
         self.update_panels()
 
     # ------------------------------------------------------------------ files
@@ -1256,8 +1316,192 @@ class TabWriterApp:
         if not self.confirm_discard():
             return
         self.path, self.source_text = None, None
+        self.close_player()
         self.editor.load(Song())
         self.refresh()
+
+    # ------------------------------------------------------------------ playback
+    def update_transport(self) -> None:
+        show = playback.has_timing(self.editor.song)
+        if show and not self._transport_shown:
+            self.transport.pack(side="top", fill="x", before=self.sheet_frame.pack_slaves()[0])
+        elif not show and self._transport_shown:
+            self.stop_playback()
+            self.transport.pack_forget()
+        self._transport_shown = show
+
+    def _timeline(self) -> playback.Timeline | None:
+        if self.timeline is None:
+            self.timeline = playback.timeline(self.editor.song)
+        return self.timeline
+
+    def _track(self) -> str:
+        return next((k for k, v in playback.TRACKS.items() if v == self.track_var.get()), "mix")
+
+    def _ensure_player(self) -> bool:
+        try:
+            if self.player is None:
+                self.player = playback.Player()
+            self.root.configure(cursor="watch")
+            self.root.update_idletasks()
+            path = playback.audio_file(self.editor.song, self._track(), self.prefs.get("transcriber_dir"))
+            self.player.load(path)
+            return True
+        except (playback.PlayerError, OSError) as exc:
+            messagebox.showerror("Playback", str(exc), parent=self.root)
+            return False
+        finally:
+            self.root.configure(cursor="")
+
+    def toggle_play(self) -> None:
+        if self.player and self.player.playing:
+            self.pause_playback()
+        else:
+            self.start_playback()
+
+    def _cursor_time(self) -> float:
+        tl = self._timeline()
+        c = self.editor.cursor
+        t = tl.time_of(c.m, c.e) if tl else None
+        return t if t is not None else (tl.times[0] if tl and tl.times else 0.0)
+
+    def start_playback(self) -> None:
+        if not self._timeline() or not self._ensure_player():
+            return
+        self.play_from = Cursor(**vars(self.editor.cursor))
+        try:
+            self.player.play(max(0.0, self._cursor_time() - 0.05))
+        except playback.PlayerError as exc:
+            messagebox.showerror("Playback", str(exc), parent=self.root)
+            return
+        self.play_btn.configure(text="\u23f8  Pause")
+        self._tick()
+
+    def seek_to_cursor(self) -> None:
+        try:
+            self.player.play(max(0.0, self._cursor_time() - 0.05))
+        except playback.PlayerError:
+            pass
+
+    def pause_playback(self) -> None:
+        """Pause and leave the edit cursor on the beat that was sounding, so Play carries on from there."""
+        if not self.player:
+            return
+        t = self.player.position()
+        self.player.pause()
+        self._cancel_tick()
+        tl = self._timeline()
+        if tl:
+            i = tl.index_at(t)
+            if i >= 0:
+                m, e = tl.slots[i]
+                self.editor.set_cursor(m, e, self.editor.cursor.s)
+        self.play_btn.configure(text="\u25b6  Play")
+        self.canvas.delete("playhead")
+        self.refresh(full=False)
+
+    def stop_playback(self) -> None:
+        if self.player and self.player.playing:
+            self.player.pause()
+        self._cancel_tick()
+        self.canvas.delete("playhead")
+        self.play_btn.configure(text="\u25b6  Play")
+        if self.play_from is not None:
+            c = self.play_from
+            self.editor.set_cursor(c.m, c.e, c.s)
+            self.play_from = None
+            self.refresh(full=False)
+        self.time_label.configure(text="")
+
+    def close_player(self) -> None:
+        self.stop_playback()
+        if self.player:
+            self.player.close()
+
+    def change_track(self) -> None:
+        if not (self.player and self.player.playing):
+            return
+        t = self.player.position()
+        if self._ensure_player():
+            self.player.play(t)
+
+    def _cancel_tick(self) -> None:
+        if self.play_job:
+            self.root.after_cancel(self.play_job)
+            self.play_job = None
+
+    def _tick(self) -> None:
+        self.play_job = None
+        if not (self.player and self.player.playing):
+            return
+        t = self.player.position()
+        tl = self._timeline()
+        if self.player.finished() or (tl and t >= tl.end):
+            self.stop_playback()
+            return
+        self.draw_playhead(t)
+        total = self.player.length
+        self.time_label.configure(text=f"{int(t // 60)}:{int(t % 60):02d} / {int(total // 60)}:{int(total % 60):02d}")
+        self.play_job = self.root.after(30, self._tick)
+
+    def draw_playhead(self, t: float) -> None:
+        c = self.canvas
+        c.delete("playhead")
+        tl = self._timeline()
+        if not tl:
+            return
+        i = tl.index_at(t)
+        if i < 0:
+            return
+        m, e = tl.slots[i]
+        here = self.slot_cache.get((m, e))
+        if not here:
+            return
+        sys_, oy, xn, sx, sw = here
+        # Glide towards the next beat, or the end of the bar if the next beat is on another line.
+        x = xn
+        t_next = tl.times[i + 1] if i + 1 < len(tl.times) else tl.end
+        nxt = self.slot_cache.get(tl.slots[i + 1]) if i + 1 < len(tl.slots) else None
+        if nxt and nxt[0] is sys_:
+            x_next = nxt[2]
+        else:
+            bar = self.slot_cache.get((m, None))
+            x_next = bar[3] + bar[4] - 4 if bar else xn
+        if t_next > tl.times[i]:
+            x = xn + (x_next - xn) * min(1.0, (t - tl.times[i]) / (t_next - tl.times[i]))
+        top, bot = oy + sys_.staff_top - 10, oy + sys_.string_y(sys_.strings) + 10
+        color = self.pal["cursor"]
+        c.create_rectangle(self.X(sx + 1), self.Y(top + 2), self.X(sx + sw - 1), self.Y(bot - 2),
+                           outline=self.pal["column"], width=1, tags="playhead")
+        c.create_line(self.X(x), self.Y(top), self.X(x), self.Y(bot), fill=color, width=max(2, 1.6 * self.scale),
+                      tags="playhead")
+        c.create_polygon(self.X(x - 4), self.Y(top - 6), self.X(x + 4), self.Y(top - 6), self.X(x), self.Y(top),
+                         fill=color, outline="", tags="playhead")
+        if self.follow_var.get():
+            y1, y2 = self.Y(top - 30), self.Y(bot + 40)
+            view_top, view_bot = c.canvasy(0), c.canvasy(c.winfo_height())
+            if y1 < view_top or y2 > view_bot:
+                total = float(c.cget("scrollregion").split()[3])
+                c.yview_moveto(max(0.0, (y1 - c.winfo_height() * 0.25) / total))
+
+    def import_youtube(self) -> None:
+        from .import_dialog import ImportDialog
+        ImportDialog(self)
+
+    def load_imported(self, song: Song) -> bool:
+        """Open a transcribed song as a new, unsaved tab. Returns False if the user cancelled."""
+        if not self.confirm_discard():
+            return False
+        self.path, self.source_text = None, None
+        self.set_selection(None)
+        self.close_player()
+        self.editor.load(song)
+        self.editor.dirty = True
+        self.canvas.yview_moveto(0)
+        self.refresh()
+        bars = len(self.editor.refs())
+        self.flash(f"Imported {bars} bars from the transcription. It's a draft — check it by ear and fix what's off.")
+        return True
 
     def open(self) -> None:
         if not self.confirm_discard():
@@ -1271,6 +1515,7 @@ class TabWriterApp:
         if not path.exists() and create:
             self.path, self.source_text = path, None
             song = Song(title=path.stem.replace("_", " ").replace("-", " ").title())
+            self.close_player()
             self.editor.load(song)
             self.editor.dirty = True
         else:
@@ -1280,6 +1525,7 @@ class TabWriterApp:
                 messagebox.showerror("Tab Writer", f"Could not open {path}:\n{exc}", parent=self.root)
                 return
             self.path, self.source_text = path, text
+            self.close_player()
             self.editor.load(_ensure_playable(parse(text)))
         self.refresh()
         self.update_source_panel(force=True)
@@ -1299,7 +1545,7 @@ class TabWriterApp:
 
     def save_as(self) -> bool:
         name = filedialog.asksaveasfilename(parent=self.root, title="Save tab", defaultextension=".tab",
-                                            initialfile=self.path.name if self.path else "untitled.tab",
+                                            initialfile=self.path.name if self.path else self._default_export(".tab"),
                                             filetypes=[("Tab files", "*.tab"), ("All files", "*.*")])
         if not name:
             return False
@@ -1308,6 +1554,7 @@ class TabWriterApp:
 
     def _default_export(self, ext: str) -> str:
         base = self.path.stem if self.path else (self.editor.song.title or "tab")
+        base = "".join(ch for ch in base if ch.isalnum() or ch in " -_'").strip() or "tab"
         return base + ext
 
     def export_html(self) -> None:
@@ -1361,6 +1608,7 @@ class TabWriterApp:
 
     def quit(self) -> None:
         if self.confirm_discard():
+            self.close_player()
             self.root.destroy()
 
 

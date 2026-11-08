@@ -47,6 +47,7 @@ class Measure:
     events: list[Event] = field(default_factory=list)
     show_time: bool = False       # draw the time signature at the start of this measure
     line: int = 0                 # source line, for error messages
+    at: float | None = None       # where this bar starts in the song's audio (seconds), for playback
 
     @property
     def expected(self) -> Fraction:
